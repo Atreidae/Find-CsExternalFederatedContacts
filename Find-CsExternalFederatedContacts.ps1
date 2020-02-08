@@ -107,7 +107,7 @@ If (!$LogFileLocation)
 {
   $script:LogFileLocation = $PSCommandPath -replace '.ps1', '.log'
 }
-[float]$ScriptVersion = '1.0'
+[float]$ScriptVersion = '1.0.0'
 [string]$GithubRepo = 'Find-CsExternalFederatedContacts'
 [string]$GithubBranch = 'master' 
 [string]$BlogPost = 'https://www.UcMadScientist.com/find-csexternalfederatedcontacts/' 
