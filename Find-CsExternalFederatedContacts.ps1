@@ -7,8 +7,8 @@
     Created by James Arber. www.UcMadScientist.com
 
     .NOTES
-    Version             : 0.1
-    Date                : 07/02/2020
+    Version             : 1.0
+    Date                : 09/02/2020
     Lync Version        : Lync 2013 / Skype4B 2019
     Author              : James Arber
     Header stolen from  : Greig Sheridan who stole it from Pat Richard's amazing "Get-CsConnections.ps1"
@@ -106,8 +106,10 @@ param(
 If (!$LogFileLocation) 
 {
   $script:LogFileLocation = $PSCommandPath -replace '.ps1', '.log'
+
 }
-[float]$ScriptVersion = '1.0.0'
+
+[float]$ScriptVersion = '1.0'
 [string]$GithubRepo = 'Find-CsExternalFederatedContacts'
 [string]$GithubBranch = 'master' 
 [string]$BlogPost = 'https://www.UcMadScientist.com/find-csexternalfederatedcontacts/' 
