@@ -5,8 +5,10 @@ For detailed information, see https://www.UcMadScientist.com/Find-CsExternalFede
 
 
 ## Instructions
-This script will pull data from an existing DocItemSet.xml from an Export-CsUserData export.
-To use it you will need to export your existing user data by running "Export-CsUserData -PoolFQDN "FEPool.UcMadScientist.com" -Filename "Export.zip" from a server in your Lync/Skype enviroment.
+This script will pull data from an existing DocItemSet.xml from an Export-CsUserData export if it is present in the current directory, Otherwise it will prompt you for a Front End to export the data from.
+(Note, the automated export function requires PowerShell 5 or better)
+
+To use it offline or with PowerShell 3 you will need to export your existing user data by running "Export-CsUserData -PoolFQDN "FEPool.UcMadScientist.com" -Filename "Export.zip" from a server in your Lync/Skype enviroment.
 Once you have, open the ZIP file and place the DocItemSet.xml in the same folder as this script.
 Run the script and it will generate a HTML report with all the domains that users have saved in their contact lists and how frequently they have been found.
 
@@ -22,9 +24,10 @@ Stops the script from generating a HTML report, instead, results will be placed 
 Instead of just listing the domains in the contact list, this will list every unique contact stored in every user's Lync/Skype contact list.
 Be careful! The output of this setting will contain personal data and should be treated as such.
 
+### -IncludeLocalDomain
+Stops the script from using Get-CsSipDomain and removing all the local domains, Handy if you want to report on internal usage too or are running the script offline from your Skype4B enviroment
 
 ## Known Issues
-Presently the script will also report the local sip domains as well as remote, this is typically the largest count and can be ignored.
 
 Depending on how you export your CsUserData you may get a bunch of weird-looking GUID contacts. These are from your SIP application accounts and can be safely ignored.
 
@@ -35,3 +38,37 @@ This script is free, open source and licensed under the MIT Licence. Feel free t
 https://github.com/Atreidae/
 
 
+## Revision History
+
+### v1.1: The "I rushed 1.0 out to quickly build"
+Now sorts the output object by count thanks to Fefaul. https://github.com/fefaul
+By default the script will now remove the local domain from the results if it detects its running on a Skype4B server. Use **-IncludeLocalDomain** to disable this feature. Thanks Greig
+Added built in export feature (Requires PowerShell v5!) 
+Fixed HTML formatting issue with certain domain names
+Progress Bars
+Typo corrections.
+Signed Code
+
+### v1.0: Initial Release
+
+
+
+## Acknowledgements
+
+### Testing and Advice
+Greig Sheridan https://greiginsydney.com/about/ @greiginsydney
+
+### Auto Update Code
+Pat Richard https://ucunleashed.com @patrichard
+
+### Proxy Detection
+Michel de Rooij	http://eightwone.com
+
+### Code Signing Certificate
+DigiCert https://www.digicert.com/
+
+### Report Sorting
+Fefaul https://github.com/fefaul
+
+### Progress Bars
+Mark Wragg http://wragg.io/using-write-progress-to-provide-feedback-in-powershell/

@@ -7,20 +7,32 @@
     Created by James Arber. www.UcMadScientist.com
 
     .NOTES
-    Version             : 1.0
-    Date                : 09/02/2020
+    Version             : 1.1
+    Date                : 13/02/2020
     Lync Version        : Lync 2013 / Skype4B 2019
     Author              : James Arber
     Header stolen from  : Greig Sheridan who stole it from Pat Richard's amazing "Get-CsConnections.ps1"
 
     Instructions
-    This script will pull data from an existing DocItemSet.xml from an Export-CsUserData export.
-    To use it you will need to export your existing user data by running "Export-CsUserData -PoolFQDN "FEPool.UcMadScientist.com" -Filename "Export.zip" from a server in your Lync/Skype enviroment.
+    This script will pull data from an existing DocItemSet.xml from an Export-CsUserData export if it is present in the current directory, Otherwise it will prompt you for a Front End to export the data from.
+    (Note, the automated export function requires PowerShell 5 or better)
+
+    To use it offline or with PowerShell 3 you will need to export your existing user data by running "Export-CsUserData -PoolFQDN "FEPool.UcMadScientist.com" -Filename "Export.zip" from a server in your Lync/Skype enviroment.
     Once you have, open the ZIP file and place the DocItemSet.xml in the same folder as this script.
     Run the script and it will generate a HTML report with all the domains that users have saved in their contact lists and how frequently they have been found.
 
 
     Revision History
+
+
+    : v1.1: The "I rushed 1.0 out to quickly build"
+    : Now sorts the output object by count thanks to Fefaul. https://github.com/fefaul
+    : By default the script will now remove the local domain from the results if it detects its running on a Skype4B server. Use -IncludeLocalDomain to disable this feature. Thanks Greig
+    : Added built in export feature (Requires PowerShell v5!) 
+    : Fixed HTML formatting issue with certain domain names
+    : Progress bars!
+    : Typo corrections.
+    : Signed code
 
 
     : v1.0: Initial Release
@@ -49,6 +61,11 @@
     : Code Signing Certificate
     DigiCert https://www.digicert.com/
 
+    : Report Sorting
+    Fefaul https://github.com/fefaul
+
+    : Progress Bars
+    Mark Wragg http://wragg.io/using-write-progress-to-provide-feedback-in-powershell/
 
     .INPUTS
     None. Find-CsExternalFederatedContacts.ps1 does not accept pipelined input.
@@ -66,13 +83,16 @@
     Instead of just listing the domains in the contact list, this will list every unique contact stored in every users lync/skype contact list.
     Be careful! The output of this setting will contain personal data and should be treated as such.
 
+    .PARAMETER -IncludeLocalDomain
+    Stops the script from using Get-CsSipDomain and removing all the local domains, Handy if you want to report on internal usage too or are running the script offline from your Skype4B enviroment
+
+
     .KNOWNISSUES
-    Presently the script will also report the local sip domains as well as remote, this is typically the largest count
     Depending on how you export your CsUserData you may get a bunch of weird looking GUID contacts. These are from your SIP application accounts and can be safely ignored
 
 
     .LINK
-    http://www.UcMadScientist.com/#todo
+    https://www.UcMadScientist.com/find-csexternalfederatedcontacts/
 
     .EXAMPLE
 
@@ -80,7 +100,7 @@
     Runs the script against "foo.xml" and creates a HTML report called Foo.html
 
     PS C:\> Find-CsExternalFederatedContacts.ps1
-    Runs the script and looks for the default file DocItemSet.xml and creates a HTML report called DocItemSet.html
+    Runs the script and looks for the default file DocItemSet.xml and creates a HTML report called DocItemSet.html, if no xmlfile is found the script will attempt to export the data from a frontend.
 
     PS C:\> Find-CsExternalFederatedContacts.ps1 -NoHTML
     Runs the script and looks for the default file DocItemSet.xml then outputs a PSCustomObject to the Pipline containing all the federated domains.
@@ -98,18 +118,19 @@ param(
   [Parameter(Position = 3)] [string]$LogFileLocation,
   [Parameter(Position = 4)] [switch]$NoHtml,
   [Parameter(Position = 5)] [string]$XMLFile = "DocItemSet.xml",
-  [Parameter(Position = 6)] [switch]$FullName
+  [Parameter(Position = 6)] [switch]$FullName,
+  [Parameter(Position = 7)] [switch]$IncludeLocalDomain
 )
 
 #region config
 [Net.ServicePointManager]::SecurityProtocol = 'tls12, tls11, tls'
-If (!$LogFileLocation) 
+
+If (!$LogFileLocation)
 {
   $script:LogFileLocation = $PSCommandPath -replace '.ps1', '.log'
-
 }
-
-[float]$ScriptVersion = '1.0'
+$StartTime = Get-Date
+[float]$ScriptVersion = '1.1'
 [string]$GithubRepo = 'Find-CsExternalFederatedContacts'
 [string]$GithubBranch = 'master' 
 [string]$BlogPost = 'https://www.UcMadScientist.com/find-csexternalfederatedcontacts/' 
@@ -256,7 +277,7 @@ Function Get-ScriptUpdate
   $GitHubScriptVersion = Invoke-WebRequest -Uri "https://raw.githubusercontent.com/atreidae/$GithubRepo/$GithubBranch/version" -TimeoutSec 10 -Proxy $ProxyURL
   If ($GitHubScriptVersion.Content.length -eq 0) 
   {
-    Write-Log -component 'Self Update' -Message 'Error checking for new version. You can check manually here' -severity 3
+    Write-Log -component 'Self Update' -Message 'Error checking for new version. You can check manually at the link below' -severity 3
     Write-Log -component 'Self Update' -Message $BlogPost -severity 2
     Write-Log -component 'Self Update' -Message 'Pausing for 5 seconds' -severity 2
     Start-Sleep -Seconds 5
@@ -305,13 +326,240 @@ Function Get-ScriptUpdate
   }
 }
 
+Function Import-ManagementTools 
+{
+  <#
+      .SYNOPSIS
+      Function to check for and import Skype4B Management tools
+      
 
+      .DESCRIPTION
+      Checks for and loads the approprate modules for Skype4B
+      Will throw an error and abort script if they arent found
+
+      Version                : 0.5
+      Date                   : 20/11/2019 #todo
+      Lync Version           : Tested against Skype4B 2015
+      Author                 : James Arber
+      Header stolen from     : Greig Sheridan who stole it from Pat Richard's amazing "Get-CsConnections.ps1"
+
+ 
+      .NOTES
+      Version      	      : 0.1
+      Date			          : 31/07/2018
+      Lync Version		    : Tested against Skype4B 2015
+      Author    			    : James Arber
+
+      .LINK
+      http://www.skype4badmin.com
+
+      .INPUTS
+      This function does not accept pipelined input
+
+      .OUTPUTS
+      This function does not create pipelined output
+  #>
+
+  $function = 'Import-ManagementTools'
+  #Import the Skype for Business / Lync Modules and error if not found
+  Write-Log -component $function -Message 'Checking for Lync/Skype management tools'
+  $ManagementTools             =  $false
+  if(!(Get-Module -Name 'SkypeForBusiness')) {Import-Module -Name SkypeForBusiness -Verbose:$false}
+  if(!(Get-Module -Name 'Lync')) {Import-Module -Name Lync -Verbose:$false}
+  if(Get-Module -Name 'SkypeForBusiness') {$ManagementTools = $true}
+  if(Get-Module -Name 'Lync') {$ManagementTools = $true}
+  if(!$ManagementTools) {
+    Write-Log -Message 'Could not locate Lync/Skype4B Management tools. Script Exiting' -Severity 5 -Component $Function
+    Throw 'Unable to load Skype4B/Lync management tools'
+    Exit
+  }
+
+}
+
+Function Show-Menu 
+{
+  <#
+      .SYNOPSIS
+      Function to output a menu of objects to the screen and then return the users choice as an object
+     
+      .DESCRIPTION
+      it's a menu system.
+
+      Version                : 0.5
+      Date                   : 20/11/2019 #todo
+      Lync Version           : Tested against Skype4B 2015
+      Author                 : James Arber
+      Header stolen from     : Greig Sheridan who stole it from Pat Richard's amazing "Get-CsConnections.ps1"
+
+      .PARAMETER Message
+      The message to write under the menu
+
+      .PARAMETER Objects
+      Array of items to select from
+
+      .PARAMETER Title
+      Heading of the objects
+
+      .EXAMPLE
+      Write-Log -Message 'This is a log message' -Severity 3 -component 'Example Component'
+      Writes a log file message and displays a warning to the user
+
+      .NOTES
+      Acknowledgements 	
+      Based on Greig Sheridan's menu code
+      Greig Sheridan https://greiginsydney.com/about/ @greiginsydney
+
+      .LINK
+      http://www.UcMadScientist.com
+
+      .INPUTS
+      This function does not accept pipelined input
+
+      .OUTPUTS
+      This function returns the selected object to the pipeline
+  #>
+  PARAM(
+    [switch]$Troll,
+    [Parameter(Mandatory)][String]$Message,
+    [Parameter(Mandatory)][String]$Title,
+    [Parameter(Mandatory)][string[]]$Objects #Double brackets are because we are defining an array
+  )
+  $function = 'Show-Menu'
+  Write-Log -Message 'Called to show a menu' -Severity 1 -Component $Function
+  Write-Log -Message "Message: $message" -Severity 1 -Component $Function
+  Write-Log -Message "Title: $title" -Severity 1 -Component $Function
+  Write-Log -Message "Objects: $objects" -Severity 1 -Component $Function
+  if ($Troll) {Write-Log -Message "User is a troll" -Severity 1 -Component $Function}
+  
+  
+  #First figure out the maximum width of the item's name (for the tabular menu):
+  $width = 0
+  foreach ($Object in ($Objects)) 
+  {
+    if ($Object.Length -gt $width) 
+    {
+      $width = $Object.Length
+    }
+  }
+
+  #Provide an on-screen menu of objects for the user to choose from:
+  $index = 1
+  if ($troll) {$index = ($index - ($objects.count) - 1)} #If some smart arse puts negative numbers into the menu, show negative results!
+  
+  Write-Host -Object ''
+  Write-Host -Object ('ID    '), ($title.Padright($width + 1), ' ')
+  foreach ($Object in ($Objects)) 
+  {
+    Write-Host -Object ($index.ToString()).PadRight(2, ' '), ' | ', ($Object.Padright($width + 1), ' ')
+    $index++
+  }
+  $index--	#Undo that last increment
+  Write-Host
+  Write-Host -Object $Message
+  try
+  { 
+    [int]$chosen = Read-Host -Prompt 'Select an ID or 99 to quit'
+  }
+  catch 
+  {
+    Write-Log -Message "$chosen doesnt appear to be an ID number. Please select an ID number to continue." -Severity 3 -Component $Function 
+    $choice = (Show-Menu -Message $Message -Title $Title -Objects $Objects)
+  }
+  Write-Log -Message "User input $chosen" -severity 1
+  if ($chosen -eq '99') 
+  {
+    Write-Log -Message "User Aborted" -Severity 3 -Component $Function 
+    Return $null
+  }
+  if ([int]$chosen -lt 0) 
+  {
+    Write-Log -Message "Smarty pants trying negative numbers...I can play that game too" -Severity 3 -Component $Function 
+    $choice = (Show-Menu -Message $Message -Title $Title -Objects $Objects -Troll)
+    Return $choice
+  }
+  if ([int]$chosen -gt $index) 
+  {
+    Write-Log -Message "That doesnt appear to be an option" -Severity 3 -Component $Function
+    $choice = (Show-Menu -Message $Message -Title $Title -Objects $Objects)
+    Return $choice
+  }
+  $confirm = $false
+  $chosen-- #decrement the selection by one to be array friendly.
+  Write-Log -Message "User picked array ID $chosen to select $($Objects[$chosen])" -Severity 1 -Component $Function
+  Write-Host "You selected $($Objects[$chosen])"
+  $confirm = Read-Host -Prompt 'Is this correct? (y/n)'
+  switch ($confirm)
+  {
+    "y"
+    { 
+      Write-Log -Message "User Confirmed $($Objects[$chosen])" -Severity 1 -Component $Function
+      $choice = ($Objects[$chosen])
+      
+      Return $choice
+    }
+                 
+    "n"
+    {
+      Write-Log -Message "User rejected, calling menu again" -Severity 1 -Component $Function
+      $choice = (Show-Menu -Message $Message -Title $Title -Objects $Objects)
+      Return $choice
+    }
+      
+    default
+    {
+      Write-Log -Message "I'm sorry, I didnt understand. Lets try that again" -Severity 3 -Component $Function 
+      $choice = (Show-Menu -Message $Message -Title $Title -Objects $Objects)
+      Return $choice
+    }
+  }
+  
+  $Choice = $Objects[$chosen]
+  Return $Choice
+}
+
+Function Locate-FrontEnds
+{
+  <#
+      .SYNOPSIS
+      Function to locate and output an array of FrontEnds
+     
+      .DESCRIPTION
+      Does what it says on the box
+
+      Version                : 0.1
+      Date                   : 20/11/2019 #todo
+      Lync Version           : Tested against Skype4B 2015
+      Author                 : James Arber
+      Header stolen from     : Greig Sheridan who stole it from Pat Richard's amazing "Get-CsConnections.ps1"
+      
+      .LINK
+      http://www.UcMadScientist.com
+
+      .INPUTS
+      This function does not accept pipelined input
+
+      .OUTPUTS
+      This function returns a hashtable of FrontEnd Pools
+  #>
+  
+  #Yes, I know its only a few cmdlets, but I'm trying to get in the habit of breaking functions out so I can improve them later and re-use code
+  $Function = "Locate-FrontEnds"
+  Write-Log -component $function -Message 'Locating FrontEnd Pools' -severity 2
+  
+  $Pools = (Get-CsService -Registrar)
+  
+  
+  #Return just the FQDN data as an array
+  Return $Pools.PoolFqdn 
+  
+}
 
 Function Search-XMLData
 { 
   $Function = "Search-XMLData"
   Write-Log -Message "Processing XML data" -Component $Function -severity 2 
   #Assume we have exported and extracted the XML
+  Write-Progress -Activity "Search-XMLData" -Status "Processing XML data" -PercentComplete 10 -id 1
 
   If(!(Test-path $XMLFile))
   {
@@ -322,6 +570,7 @@ Function Search-XMLData
   Try
   {
     [xml]$XML = Get-Content $XMLFile
+    Write-Progress -Activity "Search-XMLData" -Status  "Reading XML data" -PercentComplete 20 -id 1
     Write-Log "Found XML file with $($xml.DocItemSet.DocItem.count) root entity entries" -Component $Function -severity 2 
   }
   Catch
@@ -330,19 +579,26 @@ Function Search-XMLData
     Throw "XML Data error"
   }
 
-  Write-Log "Enmumerating data" -Component $Function -severity 2 
+  Write-Log "Enumerating data" -Component $Function -severity 2 
   
   $Script:FederatedDomains = @()
   $Script:UserMemberDomain = @()
 
-    
+  Write-Progress -Activity "Search-XMLData" -Status  "Locating UserMembers" -PercentComplete 20 -id 1
   #Find all the stored contacts
   $UserMembers = ($xml.GetElementsByTagName("UserMember"))
   Write-Log "Found $($UserMembers.count) UserMember entries" -Component $Function -severity 2 
   
+  $i = 1
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   #Stuff them all into a format we can use
   Foreach($member in $UserMembers)
   {
+    if ($sw.Elapsed.TotalMilliseconds -ge 500) {
+      Write-Progress -Activity "Processing Objects" -Status "Entry $i of $($UserMembers.Count)" -PercentComplete (($i / $UserMembers.Count) * 100) -Id 2
+      $sw.Reset(); $sw.Start()
+      }
+    $i++
     #Clean up the domains
     #xml weirdness 
     if ($fullname)
@@ -354,16 +610,32 @@ Function Search-XMLData
       $result = ($Member.Member.split("@")[1])
     }
     $Script:UserMemberDomain += $result
+    
   }
+  Write-Progress -id 2 -Completed -Activity "Processing Objects"
+  Write-Progress -Activity "Search-XMLData" -Status  "Locating PromptedSubscribers" -PercentComplete 50 -id 1
+  
   
   $Subscriptions = ($xml.GetElementsByTagName("PromptedSubscriber"))
   Write-Log "Found $($Subscriptions.count) Status Subscriptions" -Component $Function -severity 2 
+  
+  #Remove the XML, we dont need it anymore
+  Write-Log "Removing XML from RAM" -Component $Function -severity 2 
+  Remove-Variable -Name XML
+  
+  
+  $i = 1
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   #Clean up the domains
   Foreach($member in $Subscriptions)
   {
-
+    if ($sw.Elapsed.TotalMilliseconds -ge 500) {
+      Write-Progress -Activity "Processing Objects" -Status "Entry $i of $($Subscriptions.Count)" -PercentComplete (($i / $Subscriptions.Count) * 100)
+      $sw.Reset(); $sw.Start()
+      }
+    $i++
     #xml weirdness
-        if ($fullname)
+    if ($fullname)
     {
       $result = ($Member.Subscriber)
     }
@@ -373,18 +645,48 @@ Function Search-XMLData
     }
     $Script:UserMemberDomain += $result
   }
-
+  Write-Progress -id 2 -Completed -Activity "Processing Objects"
+  Write-Progress -Activity "Search-XMLData" -Status  "Building Array" -PercentComplete 70 -id 1
+  
+  $i = 1
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
   #Count each result and put them into a PS Object for the report
   ForEach ($result in ($Script:UserMemberDomain | Sort-Object -Unique))
   {
+    if ($sw.Elapsed.TotalMilliseconds -ge 500) {
+      Write-Progress -Activity "Processing Objects" -Status "Entry $i of $($Subscriptions.Count)" -PercentComplete (($i / $Subscriptions.Count) * 100)
+      $sw.Reset(); $sw.Start()
+      }
+    $i++
     $Script:Domainline = @{}
+
+    
+    #Put the object into the array
     $Script:Domainline           =  New-Object -TypeName PSobject 
     $Script:Domainline | Add-Member -MemberType NoteProperty -Name "Domain" -Value $result
     $SEARCH_RESULT = $Script:UserMemberDomain|Where-Object -FilterScript {$_ -eq $result}
     $Script:Domainline | Add-Member -MemberType NoteProperty -Name "Count" -Value ($SEARCH_RESULT.Count)
-    #$Script:Domainline
-    $Script:FederatedDomains  += $Script:domainLine
+    
+    #Are we including local domains?
+    If (!$IncludeLocalDomain)
+    {
+      #Check to see if its local domain
+      if ($Script:LocalDomains.identity -notcontains $Result)
+      {$Script:FederatedDomains  += $Script:domainLine}
+      Else
+      {
+        Write-Log -Message "Skipping local domain $result" -Severity 2 -Component $Function
+      }
+    }
+    Else
+    {
+      #Include local domain
+      $Script:FederatedDomains  += $Script:domainLine
+    }
+
   }
+  Write-Progress -Activity "Processing Objects" -Completed
+  Write-Progress -Activity "Search-XMLData" -Completed
 
 }
 
@@ -406,35 +708,107 @@ TD{border-width: 1px;padding: 3px;border-style: solid;border-color: black;text-a
 </style>
 "@
 
-  $Script:FederatedDomains | ConvertTo-Html -head $Style -body "<h1> $ReportTitle </h1> The following report was run on $ReportDate <p> Generated by Find-CsExternalFederatedContact.ps1 from <a href=\`"https://www.UcMadScientist.com/find-csexternalfederatedcontacts/\`">UcMadScientist.com</a>" | foreach {
-    if($_ -like "*<td>OK*")
-    {$_ -replace "<td>OK", "<td bgcolor=#33FF66>OK"} 
-    Else {$_}
-  } | Foreach {
-    if($_ -like "*<td>Warn*")
-    {$_ -replace "<td>Warn", "<td bgcolor=#F9E79F>Warn"}
-  Else {$_} } | foreach {
-    If($_ -like "*<td>Error*")
-    {$_ -replace "<td>Error", "<td bgcolor=#CD6155>Error"}
-    Else {$_}
-  } | Out-File $Report
+  $Script:FederatedDomains | Sort-Object -Property count -Descending | ConvertTo-Html -head $Style -body "<h1> $ReportTitle </h1> The following report was run on $ReportDate <p> Generated by Find-CsExternalFederatedContact.ps1 from <a href='https://www.UcMadScientist.com/find-csexternalfederatedcontacts/'>UcMadScientist.com</a>" | Out-File $Report
 
   Write-Log -Message "Finished generating HTML Report, Opening browser" -Component $Function -severity 2 
   invoke-Item $Report
 }
+
+
+
 #endregion functions
 
 #Main script
+$Function = "Main Script"
+
+
+Write-Log -Message "$ScriptVersion script started at $StartTime" -Severity 1 -Component $Function
+
 
 #Check for update
 Get-ScriptUpdate
 
-#Ill add in auto pulling of the XML later. right now, we just pull the data from the XML
+#Check to see if we are running on a management box
+
+
+Write-Log -Message 'Checking for Skype4B modules' -Severity 1 -Component $Function
+$ManagementTools = $False
+#Check for required Powershell Modules
+Try 
+{
+  Import-ManagementTools -ErrorAction stop
+  $ManagementTools = $true
+}
+Catch 
+{
+  Write-Log -Message 'Cant find mangement tools, running headless mode' -Severity 3 -Component $Function
+
+}
+
+If($ManagementTools)
+{
+
+  #Check for an export XML and get as needed.
+  If(!(Test-path $XMLFile))
+  {
+    Write-Log -Message 'XML Export not found, Prompting user for export' -Severity 2 -Component $Function
+    Write-Log -Message 'Find FrontEnds' -Severity 1 -Component $Function
+    
+    $FEPools = Locate-FrontEnds
+    
+    Write-Log -Message 'Show Menu' -Severity 1 -Component $Function
+    
+    $Choice = (Show-Menu -Message "Please Select a Front End to collect data from" -Title "Front Ends" -Objects $FEPools)
+    
+    Write-Log -Message "User selected $Choice" -Severity 1 -Component $Function
+    
+    Try
+    {
+      Write-Log -Message "Requesting UserData from $Choice" -Severity 2 -Component $Function
+      Export-CsUserData -PoolFQDN $Choice -Filename "Export.zip"
+    }
+    Catch
+    {
+      Write-Log -Message "Something went wrong collecting CsUserData" -Severity 3 -Component $Function
+      Write-Log -Message "Please run Export-CsUserData -PoolFQDN $Choice -Filename export.zip manually and extract its contents into the same folder as this script" -Severity 3 -Component $Function
+      Throw "Export-CsUserData Try/Catch loop"
+    }
+    
+    Try
+    {
+      Write-Log -Message "Expanding Archive" -Severity 2 -Component $Function
+      Expand-Archive -Path "Export.zip" -DestinationPath .
+    }
+    Catch
+    {
+      Write-Log -Message "Something went wrong expanding the files" -Severity 3 -Component $Function
+      Write-Log -Message "Manually extract the export.zip file contents into the same folder as this script" -Severity 3 -Component $Function
+      Throw "Expand-File Try/Catch loop"
+    }
+    
+    
+  }
+  
+  #Figure out the local domains
+  Try
+  {
+    Write-Log -Message 'Pulling local domain data' -Severity 1 -Component $Function
+    $Script:LocalDomains = (Get-CsSipDomain)
+  }
+  Catch
+  {
+    Write-Log -Message "Something went wrong pulling local domain data. Will be ignored" -Severity 3 -Component $Function
+  }
+  
+  
+}
+
+#I'll add in auto pulling of the XML later. right now, we just pull the data from the XML
 Search-XMLData
 
 #We we dont want a HTML report, dump it on the pipeline
 
-If ($NoHtml) {Write-Output $Script:FederatedDomains}
+If ($NoHtml) {Write-Output ($Script:FederatedDomains|Sort-Object -Property count -Descending)}
 
 #Otherwise, pump out a HTML report
 Else
@@ -442,3 +816,76 @@ Else
   Out-HTMLReport
 }
 
+
+# SIG # Begin signature block
+# MIINFwYJKoZIhvcNAQcCoIINCDCCDQQCAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
+# gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUkmmg50AQJPwDx5fpw+kT2fB/
+# GqWgggpZMIIFITCCBAmgAwIBAgIQD274plv3rQv2N1HXnqk5jzANBgkqhkiG9w0B
+# AQsFADByMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYD
+# VQQLExB3d3cuZGlnaWNlcnQuY29tMTEwLwYDVQQDEyhEaWdpQ2VydCBTSEEyIEFz
+# c3VyZWQgSUQgQ29kZSBTaWduaW5nIENBMB4XDTIwMDEwNTAwMDAwMFoXDTIyMDky
+# ODEyMDAwMFowXjELMAkGA1UEBhMCQVUxETAPBgNVBAgTCFZpY3RvcmlhMRAwDgYD
+# VQQHEwdCZXJ3aWNrMRQwEgYDVQQKEwtKYW1lcyBBcmJlcjEUMBIGA1UEAxMLSmFt
+# ZXMgQXJiZXIwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCVq3KHhsUn
+# G0iP8Xv+EIRGhPEqceUcmXftvbWSXoEL+w8h79PVn9WZawPgyDlmAZvzlAWaPGSu
+# tW7z0/XqkewTjFI4em2BxIsLr3enoB/OuBM11ktZVaMYWOHaUexj8CioBeoFTGYg
+# H98cmoo6i3xQcBbFJauJcgAI8jDTTDHM1bvDE9ItyeTr63MGJx1rob4KXCr0Oi9R
+# MVtk/TDVCNjG3IdK8dnrpKUE7s2grAiPJ2tmNkrk3R2pSRl1qx3d01LWKcV2tv4s
+# fbWLCwdz2HVTdevl7PjhwUPhuLZVj/EctCiU+5UDDtAIIIvQ9uvbFngmF0QmE9Yb
+# W1bgiyfr5GmFAgMBAAGjggHFMIIBwTAfBgNVHSMEGDAWgBRaxLl7KgqjpepxA8Bg
+# +S32ZXUOWDAdBgNVHQ4EFgQUX+77NtBOxF+2arVa8Srnig2A/ocwDgYDVR0PAQH/
+# BAQDAgeAMBMGA1UdJQQMMAoGCCsGAQUFBwMDMHcGA1UdHwRwMG4wNaAzoDGGL2h0
+# dHA6Ly9jcmwzLmRpZ2ljZXJ0LmNvbS9zaGEyLWFzc3VyZWQtY3MtZzEuY3JsMDWg
+# M6Axhi9odHRwOi8vY3JsNC5kaWdpY2VydC5jb20vc2hhMi1hc3N1cmVkLWNzLWcx
+# LmNybDBMBgNVHSAERTBDMDcGCWCGSAGG/WwDATAqMCgGCCsGAQUFBwIBFhxodHRw
+# czovL3d3dy5kaWdpY2VydC5jb20vQ1BTMAgGBmeBDAEEATCBhAYIKwYBBQUHAQEE
+# eDB2MCQGCCsGAQUFBzABhhhodHRwOi8vb2NzcC5kaWdpY2VydC5jb20wTgYIKwYB
+# BQUHMAKGQmh0dHA6Ly9jYWNlcnRzLmRpZ2ljZXJ0LmNvbS9EaWdpQ2VydFNIQTJB
+# c3N1cmVkSURDb2RlU2lnbmluZ0NBLmNydDAMBgNVHRMBAf8EAjAAMA0GCSqGSIb3
+# DQEBCwUAA4IBAQCfGaBR90KcYBczv5tVSBquFD0rP4h7oEE8ik+EOJQituu3m/nv
+# X+fG8h8f8+cG+0O55g+P/iGPS1Uo/BUEKjfUvLQjg9gJN7ZZozqP5xU7pn270rFd
+# chmu/vkSGh4waYoASiqJXvkQbVZcxV72j3+RBD1jsmgP05WaKMT5l9VZwGedVn40
+# FHNarFpJoCsyQn6sQInWdDfi6X2cYi0x4U0ogWYYyR8bhBUlt6RhevYn6EfqHgV3
+# oEZ7qwxApjyGpQIwwQUEs60/tO7bkH1futFDdogzsXFJO3cS9OykctpBucaPDrkH
+# 1AcqMqpWVRcXGebpOHnW5zPoGFG9JblyuwBZMIIFMDCCBBigAwIBAgIQBAkYG1/V
+# u2Z1U0O1b5VQCDANBgkqhkiG9w0BAQsFADBlMQswCQYDVQQGEwJVUzEVMBMGA1UE
+# ChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQuY29tMSQwIgYD
+# VQQDExtEaWdpQ2VydCBBc3N1cmVkIElEIFJvb3QgQ0EwHhcNMTMxMDIyMTIwMDAw
+# WhcNMjgxMDIyMTIwMDAwWjByMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNl
+# cnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQuY29tMTEwLwYDVQQDEyhEaWdp
+# Q2VydCBTSEEyIEFzc3VyZWQgSUQgQ29kZSBTaWduaW5nIENBMIIBIjANBgkqhkiG
+# 9w0BAQEFAAOCAQ8AMIIBCgKCAQEA+NOzHH8OEa9ndwfTCzFJGc/Q+0WZsTrbRPV/
+# 5aid2zLXcep2nQUut4/6kkPApfmJ1DcZ17aq8JyGpdglrA55KDp+6dFn08b7KSfH
+# 03sjlOSRI5aQd4L5oYQjZhJUM1B0sSgmuyRpwsJS8hRniolF1C2ho+mILCCVrhxK
+# hwjfDPXiTWAYvqrEsq5wMWYzcT6scKKrzn/pfMuSoeU7MRzP6vIK5Fe7SrXpdOYr
+# /mzLfnQ5Ng2Q7+S1TqSp6moKq4TzrGdOtcT3jNEgJSPrCGQ+UpbB8g8S9MWOD8Gi
+# 6CxR93O8vYWxYoNzQYIH5DiLanMg0A9kczyen6Yzqf0Z3yWT0QIDAQABo4IBzTCC
+# AckwEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8BAf8EBAMCAYYwEwYDVR0lBAww
+# CgYIKwYBBQUHAwMweQYIKwYBBQUHAQEEbTBrMCQGCCsGAQUFBzABhhhodHRwOi8v
+# b2NzcC5kaWdpY2VydC5jb20wQwYIKwYBBQUHMAKGN2h0dHA6Ly9jYWNlcnRzLmRp
+# Z2ljZXJ0LmNvbS9EaWdpQ2VydEFzc3VyZWRJRFJvb3RDQS5jcnQwgYEGA1UdHwR6
+# MHgwOqA4oDaGNGh0dHA6Ly9jcmw0LmRpZ2ljZXJ0LmNvbS9EaWdpQ2VydEFzc3Vy
+# ZWRJRFJvb3RDQS5jcmwwOqA4oDaGNGh0dHA6Ly9jcmwzLmRpZ2ljZXJ0LmNvbS9E
+# aWdpQ2VydEFzc3VyZWRJRFJvb3RDQS5jcmwwTwYDVR0gBEgwRjA4BgpghkgBhv1s
+# AAIEMCowKAYIKwYBBQUHAgEWHGh0dHBzOi8vd3d3LmRpZ2ljZXJ0LmNvbS9DUFMw
+# CgYIYIZIAYb9bAMwHQYDVR0OBBYEFFrEuXsqCqOl6nEDwGD5LfZldQ5YMB8GA1Ud
+# IwQYMBaAFEXroq/0ksuCMS1Ri6enIZ3zbcgPMA0GCSqGSIb3DQEBCwUAA4IBAQA+
+# 7A1aJLPzItEVyCx8JSl2qB1dHC06GsTvMGHXfgtg/cM9D8Svi/3vKt8gVTew4fbR
+# knUPUbRupY5a4l4kgU4QpO4/cY5jDhNLrddfRHnzNhQGivecRk5c/5CxGwcOkRX7
+# uq+1UcKNJK4kxscnKqEpKBo6cSgCPC6Ro8AlEeKcFEehemhor5unXCBc2XGxDI+7
+# qPjFEmifz0DLQESlE/DmZAwlCEIysjaKJAL+L3J+HNdJRZboWR3p+nRka7LrZkPa
+# s7CM1ekN3fYBIM6ZMWM9CBoYs4GbT8aTEAb8B4H6i9r5gkn3Ym6hU/oSlBiFLpKR
+# 6mhsRDKyZqHnGKSaZFHvMYICKDCCAiQCAQEwgYYwcjELMAkGA1UEBhMCVVMxFTAT
+# BgNVBAoTDERpZ2lDZXJ0IEluYzEZMBcGA1UECxMQd3d3LmRpZ2ljZXJ0LmNvbTEx
+# MC8GA1UEAxMoRGlnaUNlcnQgU0hBMiBBc3N1cmVkIElEIENvZGUgU2lnbmluZyBD
+# QQIQD274plv3rQv2N1HXnqk5jzAJBgUrDgMCGgUAoHgwGAYKKwYBBAGCNwIBDDEK
+# MAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgorBgEEAYI3
+# AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU5MlkA/5By4LFdRj4
+# hs+SU7cMaskwDQYJKoZIhvcNAQEBBQAEggEAHGL6rW9ngv6fWhCQ1wT+S7Zemt65
+# OxFif/ipKEVjwCpJWs+RC7lwWEDKtF0hoc9u2KVIo2Md7htdEKfmjZII+wvvhemj
+# dngFp0gOgp5R6VQYpf23QqJFVG4usGjjqiR8tlU/HZkFwief6GeS9X5cctUmepIO
+# NQo9nO8P2UFCzPg8SkecKmFKx4rkah55N6SJQ1JWpoB4M1owxyhCESRDzBXhnK/1
+# rEkrWHSnR+UIQed06EhE6p3jgKxeTPxrGyp2S8WlHG/VMdzCwe/9NTo8A2CbGp86
+# TInajYAzU2H9O9Y2/xmFbLT+IMYjZ2bxmWdlY95Jzg8w4kApIwGAQIyy/Q==
+# SIG # End signature block
