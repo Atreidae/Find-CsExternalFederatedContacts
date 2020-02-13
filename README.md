@@ -31,7 +31,6 @@ Stops the script from using Get-CsSipDomain and removing all the local domains, 
 
 Depending on how you export your CsUserData you may get a bunch of weird-looking GUID contacts. These are from your SIP application accounts and can be safely ignored.
 
-There is presently no auto export function, you will need to export the CsUserData yourself
 
 ## Fork me!
 This script is free, open source and licensed under the MIT Licence. Feel free to view the source, fork it, raise issues and submit your improvements via pull requests. You can find on Github:
